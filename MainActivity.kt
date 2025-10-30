@@ -1,90 +1,203 @@
-/*
- * Copyright (C) 2023 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-package com.example.diceroller
+package com.example.productmanager
 
+import android.app.AlertDialog
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.diceroller.ui.theme.DiceRollerTheme
+import android.view.LayoutInflater
+import android.widget.EditText
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.productmanager.adapter.ProductAdapter
+import com.example.productmanager.databinding.ActivityMainBinding
+import com.example.productmanager.model.Product
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var db: FirebaseFirestore
+    private lateinit var productAdapter: ProductAdapter
+    private val productsList = mutableListOf<Product>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            DiceRollerTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    DiceRollerApp()
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        // Initialize Firebase Firestore
+        db = Firebase.firestore
+
+        // Setup RecyclerView
+        setupRecyclerView()
+
+        // Load products from Firestore
+        loadProducts()
+
+        // Add product button
+        binding.fabAddProduct.setOnClickListener {
+            showAddProductDialog()
+        }
+    }
+
+    private fun setupRecyclerView() {
+        productAdapter = ProductAdapter(
+            productsList,
+            onEditClick = { product -> showEditProductDialog(product) },
+            onDeleteClick = { product -> deleteProduct(product) }
+        )
+
+        binding.recyclerView.apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = productAdapter
+        }
+    }
+
+    private fun loadProducts() {
+        db.collection("products")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Toast.makeText(this, "Lỗi: ${error.message}", Toast.LENGTH_SHORT).show()
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    val products = snapshot.documents.mapNotNull { doc ->
+                        doc.toObject(Product::class.java)?.apply {
+                            id = doc.id
+                        }
+                    }
+                    productsList.clear()
+                    productsList.addAll(products)
+                    productAdapter.notifyDataSetChanged()
                 }
             }
-        }
     }
-}
 
-@Preview
-@Composable
-fun DiceRollerApp() {
-    DiceWithButtonAndImage(modifier = Modifier
-        .fillMaxSize()
-        .wrapContentSize(Alignment.Center)
-    )
-}
+    private fun showAddProductDialog() {
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_add_edit_product, null)
+        val etName = dialogView.findViewById<EditText>(R.id.etProductName)
+        val etDescription = dialogView.findViewById<EditText>(R.id.etProductDescription)
+        val etPrice = dialogView.findViewById<EditText>(R.id.etProductPrice)
+        val etImageUrl = dialogView.findViewById<EditText>(R.id.etImageUrl)
 
-@Composable
-fun DiceWithButtonAndImage(modifier: Modifier = Modifier) {
-    var result by remember { mutableStateOf( 1) }
-    val imageResource = when(result) {
-        1 -> R.drawable.dice_1
-        2 -> R.drawable.dice_2
-        3 -> R.drawable.dice_3
-        4 -> R.drawable.dice_4
-        5 -> R.drawable.dice_5
-        else -> R.drawable.dice_6
+        AlertDialog.Builder(this)
+            .setTitle("Thêm Sản Phẩm")
+            .setView(dialogView)
+            .setPositiveButton("Thêm") { _, _ ->
+                val name = etName.text.toString().trim()
+                val description = etDescription.text.toString().trim()
+                val priceText = etPrice.text.toString().trim()
+                val imageUrl = etImageUrl.text.toString().trim()
+
+                if (name.isEmpty() || priceText.isEmpty()) {
+                    Toast.makeText(this, "Vui lòng nhập tên và giá", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                val price = priceText.toDoubleOrNull() ?: 0.0
+                val product = Product(
+                    name = name,
+                    description = description,
+                    price = price,
+                    imageUrl = imageUrl
+                )
+
+                addProduct(product)
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
     }
-    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Image(painter = painterResource(imageResource), contentDescription = result.toString())
-        
-        Button(
-            onClick = { result = (1..6).random() },
-        ) {
-            Text(text = stringResource(R.string.roll), fontSize = 24.sp)
-        }
+
+    private fun showEditProductDialog(product: Product) {
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_add_edit_product, null)
+        val etName = dialogView.findViewById<EditText>(R.id.etProductName)
+        val etDescription = dialogView.findViewById<EditText>(R.id.etProductDescription)
+        val etPrice = dialogView.findViewById<EditText>(R.id.etProductPrice)
+        val etImageUrl = dialogView.findViewById<EditText>(R.id.etImageUrl)
+
+        // Pre-fill with existing data
+        etName.setText(product.name)
+        etDescription.setText(product.description)
+        etPrice.setText(product.price.toString())
+        etImageUrl.setText(product.imageUrl)
+
+        AlertDialog.Builder(this)
+            .setTitle("Sửa Sản Phẩm")
+            .setView(dialogView)
+            .setPositiveButton("Cập Nhật") { _, _ ->
+                val name = etName.text.toString().trim()
+                val description = etDescription.text.toString().trim()
+                val priceText = etPrice.text.toString().trim()
+                val imageUrl = etImageUrl.text.toString().trim()
+
+                if (name.isEmpty() || priceText.isEmpty()) {
+                    Toast.makeText(this, "Vui lòng nhập tên và giá", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                val price = priceText.toDoubleOrNull() ?: 0.0
+                val updatedProduct = Product(
+                    id = product.id,
+                    name = name,
+                    description = description,
+                    price = price,
+                    imageUrl = imageUrl
+                )
+
+                updateProduct(updatedProduct)
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun addProduct(product: Product) {
+        db.collection("products")
+            .add(product)
+            .addOnSuccessListener {
+                Toast.makeText(this, "Thêm sản phẩm thành công!", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { e ->
+                Toast.makeText(this, "Lỗi: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun updateProduct(product: Product) {
+        val productMap = hashMapOf(
+            "name" to product.name,
+            "description" to product.description,
+            "price" to product.price,
+            "imageUrl" to product.imageUrl
+        )
+
+        db.collection("products")
+            .document(product.id)
+            .update(productMap as Map<String, Any>)
+            .addOnSuccessListener {
+                Toast.makeText(this, "Cập nhật thành công!", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { e ->
+                Toast.makeText(this, "Lỗi: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun deleteProduct(product: Product) {
+        AlertDialog.Builder(this)
+            .setTitle("Xác Nhận Xóa")
+            .setMessage("Bạn có chắc muốn xóa sản phẩm '${product.name}'?")
+            .setPositiveButton("Xóa") { _, _ ->
+                db.collection("products")
+                    .document(product.id)
+                    .delete()
+                    .addOnSuccessListener {
+                        Toast.makeText(this, "Xóa thành công!", Toast.LENGTH_SHORT).show()
+                    }
+                    .addOnFailureListener { e ->
+                        Toast.makeText(this, "Lỗi: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
     }
 }
